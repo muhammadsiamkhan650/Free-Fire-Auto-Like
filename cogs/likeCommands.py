@@ -40,6 +40,21 @@ class LikeCommands(commands.Cog):
             json.dump(data_to_save, f, indent=4)
         os.replace(temp_file, CONFIG_FILE)
 
+    # === Set Auto-Like Channel ===
+    @commands.hybrid_command(
+        name="setautolikechannel", description="Set the channel where auto-like logs will be sent"
+    )
+    async def set_auto_like_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        guild_id = str(ctx.guild.id)
+        server_config = self.config_data["servers"].setdefault(guild_id, {})
+        server_config["auto_like_channel"] = channel.id
+        self.save_config()
+
+        await ctx.send(
+            f"✅ Auto-Like log channel set to {channel.mention}",
+            delete_after=10
+        )
+
     # === Add UID ===
     @commands.hybrid_command(
         name="addautolike", description="Add a player UID to auto-like every 24h"
@@ -120,6 +135,12 @@ class LikeCommands(commands.Cog):
         print("⏳ Running auto-like task...")
         for guild_id, server_config in self.config_data["servers"].items():
             auto_list = server_config.get("auto_like_list", [])
+            log_channel_id = server_config.get("auto_like_channel")
+
+            log_channel = None
+            if log_channel_id:
+                log_channel = self.bot.get_channel(log_channel_id)
+
             for entry in auto_list:
                 uid = entry["uid"]
                 server = entry["server"]
@@ -130,13 +151,20 @@ class LikeCommands(commands.Cog):
                         if response.status == 200:
                             data = await response.json()
                             if data.get("status") == 1:
-                                print(f"✅ Auto-liked {uid} ({server})")
+                                msg = f"✅ Auto-liked `{uid}` ({server})"
                             else:
-                                print(f"❌ Failed auto-like {uid} ({server}) - Already max today")
+                                msg = f"❌ Failed auto-like `{uid}` ({server}) - Already max today"
                         else:
-                            print(f"⚠️ API Error: {response.status}")
+                            msg = f"⚠️ API Error: {response.status}"
+
+                        print(msg)
+                        if log_channel:
+                            await log_channel.send(msg)
+
                 except Exception as e:
                     print(f"Error in auto_like_task: {e}")
+                    if log_channel:
+                        await log_channel.send(f"⚠️ Error: {e}")
 
     @auto_like_task.before_loop
     async def before_auto_like(self):
