@@ -12,205 +12,117 @@ load_dotenv()
 API_URL = os.getenv("API_URL")
 CONFIG_FILE = "like_channels.json"
 
-
 class LikeCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.api_host = API_URL
-        self.config_data = self.load_config()
         self.session = aiohttp.ClientSession()
-        self.auto_like_task.start()
-
-    # === CONFIG ===
-    def load_config(self):
-        default_config = {"servers": {}}
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r") as f:
-                    loaded_config = json.load(f)
-                    loaded_config.setdefault("servers", {})
-                    return loaded_config
-            except json.JSONDecodeError:
-                print("⚠️ WARNING: Corrupt config. Resetting.")
-        self.save_config(default_config)
-        return default_config
-
-    def save_config(self, config_to_save=None):
-        data_to_save = config_to_save if config_to_save else self.config_data
-        temp_file = CONFIG_FILE + ".tmp"
-        with open(temp_file, "w") as f:
-            json.dump(data_to_save, f, indent=4)
-        os.replace(temp_file, CONFIG_FILE)
-
-    # === UTILS: EMBED SYSTEM ===
-    def make_embed(self, title, description, color, footer="Panther Corporation", delete_after=None):
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=color,
-            timestamp=datetime.now()
-        )
-        embed.set_footer(text=footer)
-        return embed, delete_after
-
-    async def send_embed(self, ctx, title, description, color=discord.Color.blue(), footer="Panther Corporation", delete_after=10):
-        embed, da = self.make_embed(title, description, color, footer, delete_after)
-        await ctx.send(embed=embed, delete_after=da)
-
-    # === ADD UID ===
-    @commands.hybrid_command(
-        name="addautolike", description="Add a player UID to auto-like every 24h"
-    )
-    @app_commands.describe(server="Server region", uid="Player UID")
-    async def add_auto_like(self, ctx: commands.Context, server: str, uid: str):
-        if not uid.isdigit() or len(uid) < 6:
-            return await self.send_embed(ctx, "⚠️ Invalid UID", "UID must be numbers and at least 6 digits.", discord.Color.red())
-
-        guild_id = str(ctx.guild.id)
-        server_config = self.config_data["servers"].setdefault(guild_id, {})
-        auto_list = server_config.setdefault("auto_like_list", [])
-
-        if any(e["uid"] == uid and e["server"] == server for e in auto_list):
-            return await self.send_embed(ctx, "⚠️ Already Exists", f"UID `{uid}` ({server}) is already in auto-like list.", discord.Color.orange())
-
-        entry = {"uid": uid, "server": server, "last_liked": None}
-        auto_list.append(entry)
-        self.save_config()
-
-        await self.send_embed(ctx, "✅ Added to Auto-Like",
-                              f"UID `{uid}` ({server}) added.\nIt will receive likes automatically every 24h.",
-                              discord.Color.green())
-
-    # === REMOVE UID ===
-    @commands.hybrid_command(
-        name="removeautolike", description="Remove a player UID from the auto-like list"
-    )
-    @app_commands.describe(server="Server region", uid="Player UID")
-    async def remove_auto_like(self, ctx: commands.Context, server: str, uid: str):
-        guild_id = str(ctx.guild.id)
-        server_config = self.config_data["servers"].setdefault(guild_id, {})
-        auto_list = server_config.setdefault("auto_like_list", [])
-
-        entry = next((e for e in auto_list if e["uid"] == uid and e["server"] == server), None)
-        if not entry:
-            return await self.send_embed(ctx, "⚠️ Not Found", f"UID `{uid}` ({server}) is not in the auto-like list.", discord.Color.red())
-
-        auto_list.remove(entry)
-        self.save_config()
-
-        await self.send_embed(ctx, "🗑️ Removed from Auto-Like",
-                              f"UID `{uid}` ({server}) has been removed from auto-like list.",
-                              discord.Color.orange())
-
-    # === LIST UID ===
-    @commands.hybrid_command(
-        name="listautolike", description="Show all UIDs currently in the auto-like list"
-    )
-    async def list_auto_like(self, ctx: commands.Context):
-        guild_id = str(ctx.guild.id)
-        server_config = self.config_data["servers"].setdefault(guild_id, {})
-        auto_list = server_config.setdefault("auto_like_list", [])
-
-        if not auto_list:
-            return await self.send_embed(ctx, "📭 Auto-Like List", "No UIDs are in the auto-like list.", discord.Color.orange())
-
-        embed = discord.Embed(
-            title="📌 Auto-Like List (with cooldown)",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
-        embed.set_footer(text="Panther Corporation")
-
-        for i, entry in enumerate(auto_list, start=1):
-            last_liked = entry.get("last_liked")
-            if last_liked:
-                last_dt = datetime.fromisoformat(last_liked)
-                next_time = last_dt + timedelta(hours=24)
-                remaining = next_time - datetime.now()
-                if remaining.total_seconds() > 0:
-                    hours, remainder = divmod(int(remaining.total_seconds()), 3600)
-                    minutes, _ = divmod(remainder, 60)
-                    timer_text = f"⏳ {hours}h {minutes}m left"
-                else:
-                    timer_text = "✅ Ready for next like"
-            else:
-                timer_text = "✅ Not liked yet"
-
-            embed.add_field(
-                name=f"{i}. UID: {entry['uid']}",
-                value=f"🌍 Server: {entry['server']}\n{timer_text}",
-                inline=False
-            )
-
-        await ctx.send(embed=embed)
-
-    # === SET AUTO LIKE CHANNEL ===
-    @commands.hybrid_command(
-        name="setautolikechannel", description="Set which channel auto-like updates will be posted in"
-    )
-    @commands.has_permissions(administrator=True)
-    @app_commands.describe(channel="Channel where auto-like updates will appear")
-    async def set_auto_like_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        guild_id = str(ctx.guild.id)
-        server_config = self.config_data["servers"].setdefault(guild_id, {})
-        server_config["auto_like_channel"] = str(channel.id)
-        self.save_config()
-
-        await self.send_embed(ctx, "✅ Channel Set",
-                              f"Auto-like updates will now be sent in {channel.mention}.",
-                              discord.Color.green())
-
-    # === AUTO TASK ===
-    @tasks.loop(hours=24)
-    async def auto_like_task(self):
-        print("⏳ Running auto-like task...")
-        for guild_id, server_config in self.config_data["servers"].items():
-            auto_list = server_config.get("auto_like_list", [])
-            channel_id = server_config.get("auto_like_channel")
-            channel = None
-            if channel_id:
-                channel = self.bot.get_channel(int(channel_id))
-
-            for entry in auto_list:
-                uid = entry["uid"]
-                server = entry["server"]
-
-                try:
-                    url = f"{self.api_host}/like?uid={uid}&server={server}"
-                    async with self.session.get(url) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if data.get("status") == 1:
-                                entry["last_liked"] = datetime.now().isoformat()
-                                print(f"✅ Auto-liked {uid} ({server})")
-                                if channel:
-                                    embed, _ = self.make_embed("✅ Auto-Like Success",
-                                        f"UID `{uid}` ({server}) has been auto-liked successfully!",
-                                        discord.Color.green())
-                                    await channel.send(embed=embed)
-                            else:
-                                print(f"❌ Failed auto-like {uid} ({server}) - Already max today")
-                                if channel:
-                                    embed, _ = self.make_embed("⚠️ Auto-Like Skipped",
-                                        f"UID `{uid}` ({server}) already reached max likes today.",
-                                        discord.Color.orange())
-                                    await channel.send(embed=embed)
-                        else:
-                            print(f"⚠️ API Error: {response.status}")
-                except Exception as e:
-                    print(f"Error in auto_like_task: {e}")
-
-            self.save_config()  # save after finishing guild loop
-
-    @auto_like_task.before_loop
-    async def before_auto_like(self):
-        await self.bot.wait_until_ready()
-        print("✅ Auto-like task ready.")
+        self.autolike_task = self.auto_like_loop.start()
+        self.lock = asyncio.Lock()
 
     def cog_unload(self):
-        self.bot.loop.create_task(self.session.close())
-        self.auto_like_task.cancel()
+        self.autolike_task.cancel()
+        asyncio.create_task(self.session.close())
 
+    def load_config(self):
+        if not os.path.exists(CONFIG_FILE):
+            return {}
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
+
+    def save_config(self, config=None):
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config or self.config, f, indent=4)
+
+    @tasks.loop(minutes=5)
+    async def auto_like_loop(self):
+        await self.bot.wait_until_ready()
+        config = self.load_config()
+        for guild_id, data in config.items():
+            for uid, entry in list(data.get('auto_likes', {}).items()):
+                last_sent = datetime.fromisoformat(entry['last_sent']) if 'last_sent' in entry else None
+                if not last_sent or (datetime.utcnow() - last_sent >= timedelta(hours=24)):
+                    try:
+                        await self.send_like(entry['server'], uid)
+                        entry['last_sent'] = datetime.utcnow().isoformat()
+                        await asyncio.sleep(2)
+                    except Exception:
+                        continue
+            self.save_config(config)
+
+    async def send_like(self, server, uid):
+        async with self.session.get(f"{self.api_host}/like?server={server}&uid={uid}") as resp:
+            return await resp.json()
+
+    @app_commands.command(name="add_autolike", description="Add a UID to auto-like list.")
+    @app_commands.describe(server="Server name", uid="Player UID")
+    @commands.has_permissions(manage_guild=True)
+    async def add_autolike(self, interaction: discord.Interaction, server: str, uid: str):
+        async with self.lock:
+            config = self.load_config()
+            guild_id = str(interaction.guild_id)
+            if guild_id not in config:
+                config[guild_id] = {"auto_likes": {}}
+            config[guild_id]['auto_likes'][uid] = {
+                'server': server,
+                'added_by': interaction.user.id,
+                'added_at': datetime.utcnow().isoformat(),
+                'last_sent': datetime.utcnow().isoformat()
+            }
+            self.save_config(config)
+
+        embed = discord.Embed(title="✅ Added Auto-Like", description=f"UID `{uid}` added for server `{server}`.", color=0x00ff99)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+    @app_commands.command(name="remove_autolike", description="Remove UID from auto-like list.")
+    @commands.has_permissions(manage_guild=True)
+    async def remove_autolike(self, interaction: discord.Interaction, uid: str):
+        async with self.lock:
+            config = self.load_config()
+            guild_id = str(interaction.guild_id)
+            if guild_id in config and uid in config[guild_id].get('auto_likes', {}):
+                del config[guild_id]['auto_likes'][uid]
+                self.save_config(config)
+                embed = discord.Embed(title="🗑️ Removed", description=f"UID `{uid}` removed from auto-like list.", color=0xff6666)
+                await interaction.response.send_message(embed=embed)
+            else:
+                embed = discord.Embed(title="⚠️ Not Found", description=f"UID `{uid}` not found in auto-like list.", color=0xffcc00)
+                msg = await interaction.response.send_message(embed=embed, ephemeral=False)
+                await asyncio.sleep(5)
+                await interaction.delete_original_response()
+
+    @app_commands.command(name="list_autolikes", description="List all auto-like UIDs.")
+    async def list_autolikes(self, interaction: discord.Interaction):
+        config = self.load_config()
+        guild_id = str(interaction.guild_id)
+        data = config.get(guild_id, {}).get('auto_likes', {})
+        if not data:
+            embed = discord.Embed(title="ℹ️ No Auto-Likes", description="No UIDs have been added yet.", color=0xcccccc)
+            msg = await interaction.response.send_message(embed=embed, ephemeral=False)
+            await asyncio.sleep(5)
+            await interaction.delete_original_response()
+            return
+
+        desc = "\n".join([f"`{uid}` - Server: `{v['server']}`" for uid, v in data.items()])
+        embed = discord.Embed(title="📋 Auto-Like List", description=desc, color=0x00bfff)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="clear_autolikes", description="Clear all auto-like entries.")
+    @commands.has_permissions(manage_guild=True)
+    async def clear_autolikes(self, interaction: discord.Interaction):
+        async with self.lock:
+            config = self.load_config()
+            guild_id = str(interaction.guild_id)
+            if guild_id in config:
+                config[guild_id]['auto_likes'] = {}
+                self.save_config(config)
+                embed = discord.Embed(title="🧹 Cleared", description="All auto-likes have been removed.", color=0x33cc33)
+                await interaction.response.send_message(embed=embed)
+            else:
+                embed = discord.Embed(title="⚠️ Nothing to clear", color=0xffcc00)
+                msg = await interaction.response.send_message(embed=embed, ephemeral=False)
+                await asyncio.sleep(5)
+                await interaction.delete_original_response()
 
 async def setup(bot):
     await bot.add_cog(LikeCommands(bot))
