@@ -40,15 +40,29 @@ class LikeCommands(commands.Cog):
         config = self.load_config()
         for guild_id, data in config.items():
             for uid, entry in list(data.get('auto_likes', {}).items()):
-                last_sent = datetime.fromisoformat(entry['last_sent']) if 'last_sent' in entry else None
-                if not last_sent or (datetime.utcnow() - last_sent >= timedelta(hours=24)):
-                    try:
-                        await self.send_like(entry['server'], uid)
-                        entry['last_sent'] = datetime.utcnow().isoformat()
-                        await asyncio.sleep(2)
-                    except Exception:
-                        continue
+                try:
+                    last_sent = datetime.fromisoformat(entry.get('last_sent')) if entry.get('last_sent') else None
+                    # Check if 24h passed or never sent
+                    if not last_sent or (datetime.utcnow() - last_sent >= timedelta(hours=24)):
+                        already_liked = await self.check_like_status(entry['server'], uid)
+                        if not already_liked:
+                            await self.send_like(entry['server'], uid)
+                            entry['last_sent'] = datetime.utcnow().isoformat()
+                            await asyncio.sleep(2)
+                except Exception as e:
+                    print(f"Auto-like error for {uid}: {e}")
+                    continue
             self.save_config(config)
+
+    async def check_like_status(self, server, uid):
+        try:
+            async with self.session.get(f"{self.api_host}/check_like?server={server}&uid={uid}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get('already_liked', False)
+        except Exception as e:
+            print(f"Error checking like status for {uid}: {e}")
+        return False
 
     async def send_like(self, server, uid):
         async with self.session.get(f"{self.api_host}/like?server={server}&uid={uid}") as resp:
@@ -67,7 +81,7 @@ class LikeCommands(commands.Cog):
                 'server': server,
                 'added_by': interaction.user.id,
                 'added_at': datetime.utcnow().isoformat(),
-                'last_sent': datetime.utcnow().isoformat()
+                'last_sent': None
             }
             self.save_config(config)
 
@@ -103,7 +117,7 @@ class LikeCommands(commands.Cog):
             await interaction.delete_original_response()
             return
 
-        desc = "\n".join([f"`{uid}` - Server: `{v['server']}`" for uid, v in data.items()])
+        desc = "\n".join([f"`{uid}` - Server: `{v['server']}` | Last Sent: `{v['last_sent'] or 'Never'}`" for uid, v in data.items()])
         embed = discord.Embed(title="📋 Auto-Like List", description=desc, color=0x00bfff)
         await interaction.response.send_message(embed=embed)
 
