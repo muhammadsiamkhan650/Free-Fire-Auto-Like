@@ -74,12 +74,17 @@ class LikeCommands(commands.Cog):
             for uid, entry in list(data.get('auto_likes', {}).items()):
                 try:
                     last_sent = datetime.fromisoformat(entry.get('last_sent')) if entry.get('last_sent') else None
-                    if not last_sent or (datetime.utcnow() - last_sent >= timedelta(hours=24)):
-                        already_liked = await self.check_like_status(entry['server'], uid)
-                        if not already_liked:
-                            await self.send_like(entry['server'], uid)
-                            entry['last_sent'] = datetime.utcnow().isoformat()
-                            await asyncio.sleep(2)
+                    already_liked = await self.check_like_status(entry['server'], uid)
+                    # Send like if not already sent today
+                    if not already_liked:
+                        await self.send_like(entry['server'], uid)
+                        entry['last_sent'] = datetime.utcnow().isoformat()
+                        await asyncio.sleep(2)
+                    # If last_sent is older than 24h, resend like
+                    elif last_sent and (datetime.utcnow() - last_sent >= timedelta(hours=24)):
+                        await self.send_like(entry['server'], uid)
+                        entry['last_sent'] = datetime.utcnow().isoformat()
+                        await asyncio.sleep(2)
                 except Exception as e:
                     print(f"Auto-like error for {uid}: {e}")
                     continue
